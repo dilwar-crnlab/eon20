@@ -1,5 +1,5 @@
 import matplotlib.pyplot as plt
-from eon_simulador import PLIAwareRMSA
+from eon_simulador_DQN import PLIAwareRMSA
 import simpy
 from random import seed
 from config import *
