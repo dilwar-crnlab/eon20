@@ -7,6 +7,7 @@ import math
 from itertools import islice
 from tqdm import tqdm
 import heapq
+import time
 
 
 topology = nx.read_weighted_edgelist('topology/' + TOPOLOGY, nodetype=int)
@@ -48,7 +49,7 @@ class Simulador(object):
                     self.k_paths[i,j] = self.k_shortest_paths(topology, i, j, N_PATH, weight='weight')
 
     def Distance(self, path):
-    	return nx.path_weight(topology, path, weight='weight')
+        return nx.path_weight(topology, path, weight='weight')
 
     def k_shortest_paths(self,G, source, target, k, weight='weight'):
         return list(islice(nx.shortest_simple_paths(G, source, target, weight=weight), k))
@@ -73,12 +74,15 @@ class QLearningRouter(Simulador):
         self.distances = {}
         self.calculate_all_distances()
         self.c_table = {}  # New confidence table
+        self.last_update_time = {}
         
 
     def initialize_q_table(self):
+        current_time = time.time()
         for node in self.nodes:
             self.q_table[node] = {neighbor: 0 for neighbor in topology[node]}
             self.c_table[node] = {neighbor: 0.5 for neighbor in topology[node]}  # Initialize confidence to 0.5
+            self.last_update_time[node] = {neighbor: current_time for neighbor in topology[node]}
 
     def get_action(self, state, possible_actions):
         if random() < EPSILON:
@@ -88,6 +92,12 @@ class QLearningRouter(Simulador):
 
     def calculate_learning_rate(self, c_old, c_est):
         return max(c_est, 1 - c_old)
+
+    def decay_confidence(self, state, action, current_time):
+        last_update = self.last_update_time[state][action]
+        time_diff = current_time - last_update
+        decay_factor = 0.99  # Adjust this value to control decay rate
+        self.c_table[state][action] *= (decay_factor ** time_diff)
 
     def calculate_all_distances(self):
         self.distances = {}
@@ -99,6 +109,9 @@ class QLearningRouter(Simulador):
                     self.distances[(source, target)] = nx.shortest_path_length(topology, source, target, weight='weight')
 
     def update_q_value(self, state, action, reward, next_state):
+        current_time = time.time()
+        self.decay_confidence(state, action, current_time)
+        
         current_q = self.q_table[state][action]
         max_next_q = max(self.q_table[next_state].values())
         c_old = self.c_table[state][action]
@@ -109,6 +122,7 @@ class QLearningRouter(Simulador):
 
         # Update confidence value
         self.c_table[state][action] = c_old + alpha * (1 - c_old)
+        self.last_update_time[state][action] = current_time
 
     def find_k_paths(self, source, destination):
         paths = []
