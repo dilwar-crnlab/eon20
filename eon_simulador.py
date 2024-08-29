@@ -6,9 +6,10 @@ import networkx as nx
 import math
 from itertools import islice
 from tqdm import tqdm
+import heapq
 
 
-topology = nx.read_weighted_edgelist('topology/' + TOPOLOGY, nodetype=int)
+topology = nx.read_weighted_edgelist('../topology/' + TOPOLOGY, nodetype=int)
 
 class Desalocate(object):
     def __init__(self, env):
@@ -32,11 +33,12 @@ class Simulador(object):
         self.cont_req = 0
         self.k_paths = {}
         self.modulation_table = {
-            (0, 500): 4,
-            (501, 1000): 3,
-            (1001, 2000): 2,
-            (2001, float('inf')): 1
+            (0, 560): 4,
+            (561, 1360): 3,
+            (1360, 2720): 2,
+            (2721, 5520): 1
         }
+        self.closeness_centrality = nx.closeness_centrality(topology)
 
     def Run(self, rate):
         global topology
@@ -53,10 +55,14 @@ class Simulador(object):
 
 	#Calculates the modulation format according to the path distance   
     def Modulation(self, dist, demand):
-        for (lower, upper), multiplier in self.modulation_table.items():
-            if lower <= dist <= upper:
-                return math.ceil(float(demand) / float(multiplier * SLOT_SIZE))
-        return math.ceil(float(demand) / float(SLOT_SIZE))  # Default case
+        if dist <= 560:
+            return (float(demand) / float(4 * SLOT_SIZE))
+        elif 560 < dist <= 1360:
+            return (float(demand) / float(3 * SLOT_SIZE))
+        elif 1360 < dist <= 2720:
+            return (float(demand) / float(2 * SLOT_SIZE)) 
+        else:
+            return (float(demand) / float(1 * SLOT_SIZE))
 
 
 class QLearningRouter(Simulador):
@@ -64,6 +70,8 @@ class QLearningRouter(Simulador):
         super().__init__(env)
         self.q_table = {}
         self.initialize_q_table()
+        self.distances = {}
+        self.calculate_all_distances()
 
     def initialize_q_table(self):
         for node in self.nodes:
@@ -74,6 +82,15 @@ class QLearningRouter(Simulador):
             return choice(possible_actions)
         else:
             return max(possible_actions, key=lambda a: self.q_table[state][a])
+
+    def calculate_all_distances(self):
+        self.distances = {}
+        for source in self.nodes:
+            for target in self.nodes:
+                if source == target:
+                    self.distances[(source, target)] = 0
+                else:
+                    self.distances[(source, target)] = nx.shortest_path_length(topology, source, target, weight='weight')
 
     def update_q_value(self, state, action, reward, next_state):
         current_q = self.q_table[state][action]
@@ -90,9 +107,14 @@ class QLearningRouter(Simulador):
             while current_node != destination:
                 possible_actions = [node for node in topology[current_node] if node not in visited]
                 if not possible_actions:
-                    break
+                    break  # No valid moves, abandon this path
                 action = self.get_action(current_node, possible_actions)
-                reward = 1 / topology[current_node][action]['weight']
+                
+                
+                link_length = 1 / topology[current_node][action]['weight']
+                link_fragmentation = self.calculate_link_fragmentation(current_node, action)
+                link_load = self.calculate_link_load(current_node, action)
+                reward = link_length  + (1-link_load) + (1-link_fragmentation)     
                 self.update_q_value(current_node, action, reward, action)
                 path.append(action)
                 visited.add(action)
@@ -100,6 +122,38 @@ class QLearningRouter(Simulador):
             if current_node == destination:
                 paths.append(tuple(path))
         return sorted(set(paths), key=len)[:K_PATHS]
+
+
+
+    
+    # Combine distance and fragmentation
+        return distance + (1 - avg_fragmentation)
+
+    def calculate_link_load(self, node1, node2):
+        link_capacity = topology[node1][node2]['capacity']
+        return sum(1 for slot in link_capacity if slot != 0) / len(link_capacity)
+
+
+    def calculate_link_fragmentation(self, node1, node2):
+        link_capacity = topology[node1][node2]['capacity']
+        S = len(link_capacity)  # Total number of spectrum slots
+        free_fragments = []
+        current_fragment = 0
+        # Identify free fragments
+        for slot in link_capacity:
+            if slot == 0:
+                current_fragment += 1
+            else:
+                if current_fragment > 0:
+                    free_fragments.append(current_fragment)
+                    current_fragment = 0
+        if current_fragment > 0:
+            free_fragments.append(current_fragment)
+        # Calculate entropy-based fragmentation for this link
+        link_fragmentation = 0
+        for w in free_fragments:
+            link_fragmentation += (w / S) * math.log(S / w)
+        return link_fragmentation
 
 class PLIAwareRMSA(QLearningRouter):
     def __init__(self, env):
@@ -157,6 +211,7 @@ class PLIAwareRMSA(QLearningRouter):
                     self.allocate_path(path, spectrum, count)
                     fragmentation = self.calculate_fragmentation(path)
                     reward = 1 - fragmentation  # Higher reward for less fragmentation
+                    #reward = 1
                     self.update_q_values(path, reward)
                     desalocate = Desalocate(self.env)
                     self.env.process(desalocate.Run(count, path, spectrum, holding_time))
@@ -166,6 +221,10 @@ class PLIAwareRMSA(QLearningRouter):
             else:
                 self.NumReqBlocked += 1
                 #print("Request", count, "blocked")
+
+            #blocking_ratio = (self.NumReqBlocked / (count+1)) * 100
+            #print(f"\rCurrent Blocking Ratio: {blocking_ratio:.2f}% ", end="", flush=True)
+        #print()
 
     def allocate_path(self, path, spectrum, count):
         for i in range(len(path) - 1):
