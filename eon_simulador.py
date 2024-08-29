@@ -9,7 +9,7 @@ from tqdm import tqdm
 import heapq
 
 
-topology = nx.read_weighted_edgelist('../topology/' + TOPOLOGY, nodetype=int)
+topology = nx.read_weighted_edgelist('topology/' + TOPOLOGY, nodetype=int)
 
 class Desalocate(object):
     def __init__(self, env):
@@ -72,16 +72,22 @@ class QLearningRouter(Simulador):
         self.initialize_q_table()
         self.distances = {}
         self.calculate_all_distances()
+        self.c_table = {}  # New confidence table
+        
 
     def initialize_q_table(self):
         for node in self.nodes:
             self.q_table[node] = {neighbor: 0 for neighbor in topology[node]}
+            self.c_table[node] = {neighbor: 0.5 for neighbor in topology[node]}  # Initialize confidence to 0.5
 
     def get_action(self, state, possible_actions):
         if random() < EPSILON:
             return choice(possible_actions)
         else:
             return max(possible_actions, key=lambda a: self.q_table[state][a])
+
+    def calculate_learning_rate(self, c_old, c_est):
+        return max(c_est, 1 - c_old)
 
     def calculate_all_distances(self):
         self.distances = {}
@@ -95,8 +101,14 @@ class QLearningRouter(Simulador):
     def update_q_value(self, state, action, reward, next_state):
         current_q = self.q_table[state][action]
         max_next_q = max(self.q_table[next_state].values())
-        new_q = (1 - ALPHA) * current_q + ALPHA * (reward + GAMMA * max_next_q)
+        c_old = self.c_table[state][action]
+        c_est = max(self.c_table[next_state].values())
+        alpha = self.calculate_learning_rate(c_old, c_est)
+        new_q = current_q + alpha * (reward + GAMMA * max_next_q - current_q)
         self.q_table[state][action] = new_q
+
+        # Update confidence value
+        self.c_table[state][action] = c_old + alpha * (1 - c_old)
 
     def find_k_paths(self, source, destination):
         paths = []
@@ -114,7 +126,9 @@ class QLearningRouter(Simulador):
                 link_length = 1 / topology[current_node][action]['weight']
                 link_fragmentation = self.calculate_link_fragmentation(current_node, action)
                 link_load = self.calculate_link_load(current_node, action)
-                reward = link_length  + (1-link_load) + (1-link_fragmentation)     
+
+                closeness_factor = 1 - self.closeness_centrality[action]  # Invert the closeness centrality
+                reward = link_length + (1-link_load) + (1-link_fragmentation) + closeness_factor   
                 self.update_q_value(current_node, action, reward, action)
                 path.append(action)
                 visited.add(action)
